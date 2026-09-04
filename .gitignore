@@ -1,0 +1,11 @@
+.env
+models/**
+!models/**/.gitkeep
+llm_models/**
+!llm_models/.gitkeep
+output/**
+!output/.gitkeep
+__pycache__/
+*.pyc
+.DS_Store
+test_result.png
