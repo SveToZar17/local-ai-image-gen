@@ -23,6 +23,11 @@ log = logging.getLogger("telegram_bot")
 
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 API_BASE_URL = os.getenv("API_BASE_URL", "http://api:8000")
+ALLOWED_TELEGRAM_CHAT_IDS = {
+    int(value.strip())
+    for value in os.getenv("ALLOWED_TELEGRAM_CHAT_IDS", "").split(",")
+    if value.strip()
+}
 
 TEMPLATES = {
     "default": "Обычный",
@@ -35,7 +40,20 @@ TEMPLATES = {
 user_state: dict[int, dict] = {}
 
 
+def is_allowed(update: Update) -> bool:
+    if not ALLOWED_TELEGRAM_CHAT_IDS:
+        return True
+    chat = update.effective_chat
+    return chat is not None and chat.id in ALLOWED_TELEGRAM_CHAT_IDS
+
+
+def deny_if_not_allowed(update: Update) -> bool:
+    return not is_allowed(update)
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if deny_if_not_allowed(update):
+        return
     await update.message.reply_text(
         "Привет! Я генерирую картинки на локальной видеокарте хозяина этого бота 🖼\n\n"
         "Просто отправь мне текстовое описание картинки, и я её сгенерирую.\n"
@@ -46,6 +64,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if deny_if_not_allowed(update):
+        return
     await update.message.reply_text(
         "Просто напишите, что нарисовать, например:\n"
         "«рыжий кот в скафандре на луне»\n\n"
@@ -55,6 +75,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def choose_template(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if deny_if_not_allowed(update):
+        return
     buttons = [
         [InlineKeyboardButton(label, callback_data=key)]
         for key, label in TEMPLATES.items()
@@ -65,6 +87,9 @@ async def choose_template(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def on_template_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if deny_if_not_allowed(update):
+        await update.callback_query.answer("Доступ запрещён", show_alert=True)
+        return
     query = update.callback_query
     await query.answer()
     chat_id = query.message.chat_id
@@ -73,6 +98,8 @@ async def on_template_selected(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def on_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if deny_if_not_allowed(update):
+        return
     chat_id = update.effective_chat.id
     prompt = update.message.text.strip()
     template = user_state.get(chat_id, {}).get("template", "default")

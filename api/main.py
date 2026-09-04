@@ -14,6 +14,8 @@ import time
 import uuid
 import logging
 import threading
+
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Optional
 
@@ -39,13 +41,23 @@ ENABLE_LLM = os.getenv("ENABLE_LLM_PROMPTER", "true").lower() == "true"
 DEFAULT_WIDTH = int(os.getenv("DEFAULT_WIDTH", 1024))
 DEFAULT_HEIGHT = int(os.getenv("DEFAULT_HEIGHT", 1024))
 DEFAULT_STEPS = int(os.getenv("DEFAULT_STEPS", 25))
+MAX_WIDTH = int(os.getenv("MAX_WIDTH", 1536))
+MAX_HEIGHT = int(os.getenv("MAX_HEIGHT", 1536))
+MAX_STEPS = int(os.getenv("MAX_STEPS", 50))
+GENERATION_CONCURRENCY = max(1, int(os.getenv("GENERATION_CONCURRENCY", 1)))
+CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("CORS_ORIGINS", "http://localhost:8080,http://127.0.0.1:8080").split(",")
+    if origin.strip()
+]
 
 app = FastAPI(title="Local AI Image Gateway")
+_generation_semaphore = threading.BoundedSemaphore(GENERATION_CONCURRENCY)
 
 # CORS — чтобы веб-интерфейс с другого порта мог обращаться к API
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -199,6 +211,13 @@ def health():
 
 @app.post("/generate", response_model=GenerateResponse)
 def generate(req: GenerateRequest):
+    if not req.prompt.strip():
+        raise HTTPException(status_code=400, detail="Промпт не может быть пустым")
+    if req.width < 64 or req.width > MAX_WIDTH or req.height < 64 or req.height > MAX_HEIGHT:
+        raise HTTPException(status_code=400, detail=f"Размер должен быть от 64 до {MAX_WIDTH}x{MAX_HEIGHT}")
+    if req.steps < 1 or req.steps > MAX_STEPS:
+        raise HTTPException(status_code=400, detail=f"Количество шагов должно быть от 1 до {MAX_STEPS}")
+
     # Используем replace вместо format — защита от фигурных скобок в промпте пользователя
     template = PROMPT_TEMPLATES.get(req.template, "{prompt}")
     final_prompt = template.replace("{prompt}", req.prompt)
@@ -214,6 +233,10 @@ def generate(req: GenerateRequest):
     workflow = build_workflow(final_prompt, req.negative_prompt, req.width, req.height, req.steps)
     client_id = str(uuid.uuid4())
 
+    acquired = _generation_semaphore.acquire(timeout=1)
+    if not acquired:
+        raise HTTPException(status_code=429, detail="Генератор занят. Попробуйте ещё раз через несколько секунд.")
+
     try:
         prompt_id = queue_prompt(workflow, client_id)
         result = wait_for_result(prompt_id)
@@ -225,6 +248,8 @@ def generate(req: GenerateRequest):
         raise HTTPException(status_code=504, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        _generation_semaphore.release()
 
     job_id = str(uuid.uuid4())
     out_path = OUTPUT_DIR / f"{job_id}.png"
