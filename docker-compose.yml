@@ -1,0 +1,81 @@
+version: "3.9"
+
+services:
+  # ---------------------------------------------------------------------
+  # ComfyUI — сам движок генерации картинок, использует видеокарту
+  # ---------------------------------------------------------------------
+  comfyui:
+    image: yanwk/comfyui-boot:cu124-slim  # готовый образ с CUDA + ComfyUI
+    container_name: comfyui
+    restart: unless-stopped
+    ports:
+      - "8188:8188"
+    volumes:
+      - ./models/checkpoints:/root/ComfyUI/models/checkpoints
+      - ./models/vae:/root/ComfyUI/models/vae
+      - ./models/loras:/root/ComfyUI/models/loras
+      - ./models/controlnet:/root/ComfyUI/models/controlnet
+      - ./models/upscale_models:/root/ComfyUI/models/upscale_models
+      - ./output:/root/ComfyUI/output
+      - ./workflows:/root/ComfyUI/user/default/workflows
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      - CLI_ARGS=--listen 0.0.0.0
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8188/system_stats"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # ---------------------------------------------------------------------
+  # FastAPI — шлюз между ботами/веб-интерфейсом и ComfyUI
+  # ---------------------------------------------------------------------
+  api:
+    build:
+      context: ./api
+    container_name: ai-gateway-api
+    restart: unless-stopped
+    depends_on:
+      comfyui:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./output:/app/output
+      - ./workflows:/app/workflows
+      - ./llm_models:/app/llm_models
+
+  # ---------------------------------------------------------------------
+  # Telegram-бот
+  # ---------------------------------------------------------------------
+  telegram_bot:
+    build:
+      context: ./telegram_bot
+    container_name: ai-telegram-bot
+    restart: unless-stopped
+    depends_on:
+      - api
+    env_file:
+      - .env
+
+  # ---------------------------------------------------------------------
+  # Веб-интерфейс (просто статика, можно открыть и без Docker)
+  # ---------------------------------------------------------------------
+  web_ui:
+    image: nginx:alpine
+    container_name: ai-web-ui
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "8080:80"
+    volumes:
+      - ./web_ui:/usr/share/nginx/html:ro
